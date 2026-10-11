@@ -1,0 +1,6 @@
+# シナリオ一覧
+# bun run convert でシーン画像を追加したあと、対応するシナリオをここに追記
+
+scenarios:
+  - id: chapter1
+    title: "第一章　はじまりの朝"

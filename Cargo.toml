@@ -1,0 +1,32 @@
+[package]
+name = "just-taxes"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+    "2d",             # 2Dレンダラ・スプライト描画
+    "bevy_ui",        # UI・テキスト・ボタン (レイアウト)
+    "bevy_ui_render", # UI の描画 (これが無いと UI が画面に出ない)
+    "bevy_winit",     # ウィンドウ・イベントループ
+    "default_font",   # デフォルトフォント
+    "png",            # 画像ローダー (必要に応じて webp / jpeg)
+    "vorbis",         # BGM/SE用 (ogg)
+] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml = "0.9.34"
+
+[features]
+default = ["dev"]
+dev = ["bevy/dynamic_linking", "bevy/file_watcher"]
+
+[profile.dev]
+opt-level = 0
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# ICU4X はデバッグビルドだと日本語の改行辞書が無い旨を毎フレーム eprintln する (動作に影響なし) ので黙らせる
+[profile.dev.package.icu_provider]
+debug-assertions = false

@@ -1,0 +1,39 @@
+[build]
+# 全ターゲット共通: rustc のフロントエンド並列コンパイル（全CPUコア使用）
+rustflags = [
+    "-Zthreads=0",
+    # "-Zcodegen-backend=cranelift",
+]
+
+# Windows (MSVC): 内蔵 LLD リンカーを有効化してリンク時間を大幅短縮
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+rustflags = [
+    "-Zthreads=0",
+    # "-Zcodegen-backend=cranelift",
+]
+
+# Linux (x86_64): mold リンカーを併用
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+    "-Zthreads=0",
+    "-Zcodegen-backend=cranelift",
+    "-C", "link-arg=-fuse-ld=mold",
+]
+
+# macOS (Apple Silicon): split-debuginfo でリンク高速化
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-Zthreads=0",
+    "-Zcodegen-backend=cranelift",
+    "-C", "split-debuginfo=unpacked",
+]
+
+# macOS (Intel)
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-Zthreads=0",
+    "-Zcodegen-backend=cranelift",
+    "-C", "split-debuginfo=unpacked",
+]
