@@ -21,6 +21,11 @@ fn char_em(c: char) -> f32 {
     }
 }
 
+/// 改行しないときの幅 (em)
+pub fn text_em(text: &str) -> f32 {
+    text.chars().map(char_em).sum()
+}
+
 /// 各行の範囲 (元の文字列のバイト位置) を返す。元の改行は行の区切りとして扱い、範囲に含めない
 pub fn wrap_lines(text: &str, max_em: f32) -> Vec<(usize, usize)> {
     let mut lines = Vec::new();

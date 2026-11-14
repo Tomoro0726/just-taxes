@@ -1,6 +1,8 @@
 mod books;
 mod dialogue;
 mod dot_css;
+mod markdown;
+mod npc;
 mod panel;
 mod scenario;
 mod transition;
@@ -71,6 +73,7 @@ fn main() {
                 .add_systems(
                     Update,
                     (
+                        books::sync_documents,
                         books::book_input,
                         dialogue::handle_input,
                         transition::tick_transition,

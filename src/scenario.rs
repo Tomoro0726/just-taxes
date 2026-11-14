@@ -6,6 +6,9 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::Deserialize;
 
+use crate::markdown::Block;
+use crate::npc::Npc;
+
 // ─── トランジション ──────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -43,6 +46,8 @@ pub struct Scene {
     pub transition_in: Option<TransitionType>,
     pub dialogues: Vec<Dialogue>,
     pub next: Option<Next>,
+    /// 窓口に来た NPC の持ち物の書類。シーンの間、机の上に広げておく
+    pub documents: Vec<Vec<Block>>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,7 +62,8 @@ pub struct Chapter {
 }
 
 // ─── YAMLからの生データ型 ────────────────────────────────────
-// yamlの `dialogues` は { "話者": "セリフ" } または { text: "セリフ" } のリスト
+// yamlの `dialogues` は { "話者": "セリフ" } または { text: "セリフ" } のリスト。
+// { npc: "入場" } はシーンの NPC の「入場」の会話に置き換える
 
 type YamlDialogue = BTreeMap<String, serde_yaml::Value>;
 
@@ -77,6 +83,8 @@ struct YamlScene {
     id: String,
     background: String,
     transition_in: Option<TransitionType>,
+    /// 窓口に来る NPC (`assets/npcs/<id>.md`)
+    npc: Option<String>,
     #[serde(default)]
     dialogues: Vec<YamlDialogue>,
     next: Option<YamlNext>,
@@ -100,7 +108,7 @@ struct ScenarioEntry {
     id: String,
 }
 
-fn value_to_string(v: &serde_yaml::Value) -> String {
+pub(crate) fn value_to_string(v: &serde_yaml::Value) -> String {
     match v {
         serde_yaml::Value::String(s) => s.clone(),
         serde_yaml::Value::Null => String::new(),
@@ -134,35 +142,67 @@ fn normalize_dialogue(d: &YamlDialogue) -> Dialogue {
     }
 }
 
-fn normalize(y: YamlChapter) -> Chapter {
-    Chapter {
+fn normalize_next(n: YamlNext) -> Next {
+    match n {
+        YamlNext::Short(scene) => Next {
+            scene,
+            transition_out: None,
+        },
+        YamlNext::Full {
+            scene,
+            transition_out,
+        } => Next {
+            scene,
+            transition_out,
+        },
+    }
+}
+
+fn normalize_scene(s: YamlScene, assets: &Path, player: Option<&str>) -> Result<Scene, String> {
+    let npc = s
+        .npc
+        .as_deref()
+        .map(|id| Npc::load(assets, id, player))
+        .transpose()?;
+
+    let mut dialogues = Vec::new();
+    for d in &s.dialogues {
+        let Some(heading) = d.get("npc").filter(|_| d.len() == 1) else {
+            dialogues.push(normalize_dialogue(d));
+            continue;
+        };
+        let heading = value_to_string(heading);
+        let (Some(id), Some(npc)) = (&s.npc, &npc) else {
+            return Err(format!("シーン {} に npc の指定がありません", s.id));
+        };
+        let conversation = npc
+            .conversation(&heading)
+            .ok_or_else(|| format!("NPC {id} に「{heading}」の会話がありません"))?;
+        dialogues.extend_from_slice(conversation);
+    }
+
+    Ok(Scene {
+        id: s.id,
+        background: s.background,
+        transition_in: s.transition_in,
+        dialogues,
+        next: s.next.map(normalize_next),
+        documents: npc.map(|n| n.documents).unwrap_or_default(),
+    })
+}
+
+fn normalize(y: YamlChapter, assets: &Path) -> Result<Chapter, String> {
+    let scenes = y
+        .scenes
+        .into_iter()
+        .map(|s| normalize_scene(s, assets, y.player.as_deref()))
+        .collect::<Result<_, _>>()?;
+    Ok(Chapter {
         id: y.id,
         title: y.title,
         player: y.player,
-        scenes: y
-            .scenes
-            .into_iter()
-            .map(|s| Scene {
-                id: s.id,
-                background: s.background,
-                transition_in: s.transition_in,
-                dialogues: s.dialogues.iter().map(normalize_dialogue).collect(),
-                next: s.next.map(|n| match n {
-                    YamlNext::Short(scene) => Next {
-                        scene,
-                        transition_out: None,
-                    },
-                    YamlNext::Full {
-                        scene,
-                        transition_out,
-                    } => Next {
-                        scene,
-                        transition_out,
-                    },
-                }),
-            })
-            .collect(),
-    }
+        scenes,
+    })
 }
 
 // ─── 読み込み ────────────────────────────────────────────────
@@ -176,9 +216,8 @@ fn read_yaml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
 /// 起動引数 "chapterId[/sceneId[/dialogueIdx]]" で指定されたシナリオを読み込む。
 /// 省略時は index.yaml の先頭シナリオ。
 pub fn load_story(arg: Option<&str>) -> Result<Story, String> {
-    let dir = bevy::asset::io::file::FileAssetReader::get_base_path()
-        .join("assets")
-        .join("scenarios");
+    let assets = bevy::asset::io::file::FileAssetReader::get_base_path().join("assets");
+    let dir = assets.join("scenarios");
 
     let arg = arg.unwrap_or_default();
     let mut parts = arg.split('/');
@@ -196,7 +235,10 @@ pub fn load_story(arg: Option<&str>) -> Result<Story, String> {
             .clone();
     }
 
-    let chapter = normalize(read_yaml(&dir.join(format!("{chapter_id}.yaml")))?);
+    let chapter = normalize(
+        read_yaml(&dir.join(format!("{chapter_id}.yaml")))?,
+        &assets,
+    )?;
     if chapter.scenes.is_empty() {
         return Err("シーンデータが空です".into());
     }
@@ -244,3 +286,17 @@ impl Story {
 /// 読み込み失敗時のエラーメッセージ
 #[derive(Resource)]
 pub struct LoadError(pub String);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_npc_scene() {
+        let story = load_story(Some("chapter1/counter_garudo")).unwrap();
+        let scene = story.scene();
+        assert_eq!(scene.documents.len(), 2);
+        assert_eq!(scene.dialogues[0].speaker.as_deref(), Some("アル"));
+        assert_eq!(scene.dialogues[1].speaker.as_deref(), Some("ガルド"));
+    }
+}

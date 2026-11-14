@@ -1,133 +1,101 @@
-//! 背景の本棚から資料の本を取り出し、机の上で広げて読む。
+//! 背景の本棚から資料の巻物を取り出し、机の上で広げて読む。
 //!
-//! - 本棚の背表紙をクリック → 机の上に広げる / 広げた本の × → 本棚に戻す
+//! - 本棚の背表紙をクリック → 机の中央に広げる / 広げた巻物の × → 本棚に戻す
 //! - 背表紙を机へドラッグ → ドロップした位置に広げる
-//! - 広げた本の上の軸をドラッグ → 机の上で動かす / 本棚へドラッグで戻す
-//! - Esc → 広げている本をすべて本棚に戻す
+//! - 広げた巻物をドラッグ → 机の上の好きな位置へ動かす / 本棚へドラッグで戻す
+//! - Esc → 広げている巻物をすべて本棚に戻す
 //!
+//! 中身は `assets/books/<名前>.md` に Markdown で書く (書式は markdown.rs)。
+//! 窓口に来た NPC の持ち物の書類 (npc.rs) も同じ巻物として、シーンの間ずっと机の上に広げておく。
 //! 座標はすべて背景のドット座標系 (480×270)。
 
+use bevy::asset::io::file::FileAssetReader;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::text::{LineBreak, LineHeight};
 use bevy::window::PrimaryWindow;
 
+use crate::markdown::{self, Block};
 use crate::panel::{DotFont, DotRect, DotStyle, StageNode, dot_node, rect, stage_transform};
 use crate::scenario::Story;
 use crate::transition::Transition;
-use crate::wrap::wrap;
+use crate::wrap::{text_em, wrap};
 use crate::{DOT_H, DOT_W, UiFont};
-
-// ─── 本の中身 ────────────────────────────────────────────────
-
-pub enum Block {
-    Heading(&'static str),
-    /// 本文 (自前で折り返す)
-    Text(&'static str),
-    /// 3 列の帳簿 (見出し行・明細・合計)
-    Ledger {
-        head: (&'static str, &'static str, &'static str),
-        rows: &'static [(&'static str, &'static str, &'static str)],
-        total: (&'static str, &'static str),
-    },
-    /// 許可証のカード
-    Permit {
-        title: &'static str,
-        lines: &'static [(&'static str, &'static str)],
-    },
-}
 
 pub struct BookProp {
     /// どの背景に属するか
     pub background: &'static str,
     /// 本棚上の置き場所 (背表紙)
     pub shelf: DotRect,
-    /// 机の上で本を広げられる範囲
+    /// 机の上で巻物を広げられる範囲 (巻物の中心がこの中に収まる)
     pub table: DotRect,
-    pub blocks: &'static [Block],
+    /// 中身の Markdown (`assets/books/<file>.md`)
+    pub file: &'static str,
 }
 
 /// 徴税所の机に敷かれた緑のマット
 const DESK_MAT: DotRect = rect(138.0, 180.0, 172.0, 86.0);
 
+/// 上段の元帳 4231〜4240 (幅 7 ドットで左から並ぶ)
+const fn ledger(no: u32, file: &'static str) -> BookProp {
+    BookProp {
+        background: "main",
+        shelf: rect(263.0 + 7.0 * (no - 4231) as f32, 16.0, 7.0, 39.0),
+        table: DESK_MAT,
+        file,
+    }
+}
+
+/// 下段の DICT・MEMO・LAW (幅 13 ドットで左から並ぶ)
+const fn lower(index: u32, file: &'static str) -> BookProp {
+    BookProp {
+        background: "main",
+        shelf: rect(263.0 + 13.0 * index as f32, 64.0, 13.0, 39.0),
+        table: DESK_MAT,
+        file,
+    }
+}
+
 pub const BOOK_PROPS: &[BookProp] = &[
-    // 上段の元帳 4231〜4240 のうち 4235 番
-    BookProp {
-        background: "main",
-        shelf: rect(291.0, 16.0, 7.0, 39.0),
-        table: DESK_MAT,
-        blocks: &[
-            Block::Heading("元帳 No.4235　エルドブ商会"),
-            Block::Ledger {
-                head: ("", "前期", "今期"),
-                rows: &[
-                    ("硫黄 採掘高", "246,900", "123,456"),
-                    ("人件費", "213,977", "213,977"),
-                    ("水利", "12,400", "12,400"),
-                    ("土地", "88,204", "88,204"),
-                    ("保管", "41,660", "40,210"),
-                    ("運送", "37,991", "75,982"),
-                    ("護衛料", "12,050", "24,100"),
-                    ("罰金", "0", "2,004"),
-                ],
-                total: ("納税額", "30,441"),
-            },
-            Block::Permit {
-                title: "◎ 硫黄採掘許可証",
-                lines: &[
-                    ("名義", "エルドブ商会"),
-                    ("番号", "1A235"),
-                    ("期限", "4243年"),
-                ],
-            },
-        ],
-    },
-    // 下段の LAW
-    BookProp {
-        background: "main",
-        shelf: rect(289.0, 64.0, 13.0, 39.0),
-        table: DESK_MAT,
-        blocks: &[
-            Block::Heading("税法典　抜粋"),
-            Block::Text(
-                "第七条　申告と帳簿の記載に相違あるときは、徴税官はその差額に相当する税を追徴する。",
-            ),
-            Block::Text(
-                "第十二条　凶作・災害その他やむを得ない事由により、納税者の暮らしが立ち行かぬと認めるときは、徴税官は追徴の全部又は一部を翌期に繰り延べることができる。",
-            ),
-            Block::Text(
-                "第十三条　前条の繰り延べを行ったときは、徴税官はその理由を元帳に記し、署名しなければならない。",
-            ),
-        ],
-    },
+    ledger(4231, "ledger_4231"),
+    ledger(4235, "ledger_4235"),
+    ledger(4238, "ledger_4238"),
+    lower(0, "dict"),
+    lower(1, "memo"),
+    lower(2, "tax_law"),
 ];
 
 // ─── 見た目 ──────────────────────────────────────────────────
 
-/// 広げた本の大きさ (ドット)
-const BOOK_SIZE: Vec2 = Vec2::new(160.0, 140.0);
-/// 本がチャット欄 (左下) に重ならないようにする左端
+/// 広げた巻物の大きさ (ドット)
+const BOOK_SIZE: Vec2 = Vec2::new(96.0, 116.0);
+/// 巻物がチャット欄 (左下) に重ならないようにする左端
 const BOOK_MIN_LEFT: f32 = 128.0;
-const BOOK_PAD: Vec2 = Vec2::new(8.0, 4.0);
+/// 軸が紙より左右にはみ出す幅
+const PAPER_INSET: f32 = 2.0;
+const PAPER_PAD: Vec2 = Vec2::new(4.0, 2.0);
+/// 本文の幅 (ドット)
+const CONTENT_W: f32 = BOOK_SIZE.x - 2.0 * (PAPER_INSET + PAPER_PAD.x);
 /// 巻物の軸の太さ (ドット)。スクロール 0 で上が太く下が細い、最後まで読むとその逆
 const ROD_MIN: f32 = 3.0;
-const ROD_MAX: f32 = 11.0;
-const CLOSE_SIZE: f32 = 10.0;
-const CLOSE_INSET: f32 = 3.0;
-const TEXT_DOTS: f32 = 7.0;
-const HEADING_DOTS: f32 = 8.0;
-const SMALL_DOTS: f32 = 6.0;
+const ROD_MAX: f32 = 6.0;
+const CLOSE_SIZE: f32 = 8.0;
+/// DotGothic16 は 16px で崩れずに描けるので、720p (1 ドット = 8/3 px) でちょうど 16px になる 6 ドットにする
+const TEXT_DOTS: f32 = 6.0;
+const LINE_DOTS: f32 = 8.0;
+/// 表の 2 列目以降の最小幅。これより短い値は列が縦にそろう
+const VALUE_DOTS: f32 = 24.0;
+const CARD_PAD: Vec2 = Vec2::new(3.0, 2.0);
 /// クリックとみなす移動量の上限 (論理ピクセル)
 const CLICK_THRESHOLD: f32 = 6.0;
 
-const PAPER: Color = Color::srgb_u8(0xd9, 0xc3, 0x97);
-const PAPER_LIGHT: Color = Color::srgb_u8(0xef, 0xe0, 0xb8);
-const LEATHER: Color = Color::srgb_u8(0x5c, 0x3a, 0x26);
-const ROD: Color = Color::srgb_u8(0xb9, 0x8a, 0x5c);
-const SEAL: Color = Color::srgb_u8(0xa5, 0x82, 0x4f);
-const INK: Color = Color::srgb_u8(0x24, 0x1a, 0x12);
-const INK_MUTED: Color = Color::srgb_u8(0x6b, 0x5a, 0x3f);
-/// 本を取り出した後の、空いた本棚の奥の色
+const PAPER: Color = Color::srgb_u8(0xe8, 0xd4, 0xb0);
+const PAPER_LIGHT: Color = Color::srgb_u8(0xf2, 0xe4, 0xc6);
+const ROD: Color = Color::srgb_u8(0xb8, 0x88, 0x66);
+const EDGE: Color = Color::srgb_u8(0x6e, 0x48, 0x34);
+const INK: Color = Color::srgb_u8(0x2a, 0x22, 0x32);
+const INK_MUTED: Color = Color::srgb_u8(0x7a, 0x66, 0x50);
+/// 巻物を取り出した後の、空いた本棚の奥の色
 const SHELF_EMPTY: Color = Color::srgb_u8(0x34, 0x1c, 0x27);
 const HIGHLIGHT: Color = Color::srgba(1.0, 244.0 / 255.0, 210.0 / 255.0, 0.75);
 const DROPZONE_FILL: Color = Color::srgba(1.0, 230.0 / 255.0, 160.0 / 255.0, 0.12);
@@ -137,17 +105,19 @@ const DROPZONE_FILL: Color = Color::srgba(1.0, 230.0 / 255.0, 160.0 / 255.0, 0.1
 #[derive(Clone, Copy, PartialEq)]
 enum Place {
     Shelf,
-    /// 机の上。値は本の右下角 (本は机の空間側＝左上方向へ広がる)
+    /// 机の上。値は巻物の左上
     Table(Vec2),
 }
 
 struct Drag {
     book: usize,
-    from_table: bool,
+    /// 机の上の巻物をつかんだときの、巻物の左上からカーソルまでの距離。本棚からなら None
+    grab: Option<Vec2>,
     /// 押した位置 (論理ピクセル)。クリックかドラッグかの判定に使う
     start: Vec2,
 }
 
+/// 巻物の番号は、本棚の巻物 (BOOK_PROPS の順) のあとに今のシーンの書類が続く
 #[derive(Resource, Default)]
 pub struct Books {
     places: Vec<Place>,
@@ -166,63 +136,66 @@ impl Books {
         self.order.push(book);
     }
 
-    /// カーソルの下にある、机の上の一番手前の本
+    /// 机の上の巻物の左上。ドラッグ中はカーソルに追従する
+    fn position(&self, book: usize) -> Option<Vec2> {
+        if let (Some(drag), Some(cursor)) = (&self.drag, self.cursor)
+            && drag.book == book
+            && let Some(grab) = drag.grab
+        {
+            return Some(clamp_pos(cursor - grab, table_of(book)));
+        }
+        // シーンが変わった直後は、消える前の書類の巻物がまだ残っている
+        match self.places.get(book)? {
+            Place::Table(pos) => Some(*pos),
+            Place::Shelf => None,
+        }
+    }
+
+    /// カーソルの下にある、机の上の一番手前の巻物
     fn book_at(&self, p: Vec2) -> Option<usize> {
         self.order
             .iter()
             .rev()
             .copied()
-            .find(|&b| match self.places[b] {
-                Place::Table(anchor) => book_rect(anchor).contains(p),
-                Place::Shelf => false,
-            })
+            .find(|&b| self.position(b).is_some_and(|pos| book_rect(pos).contains(p)))
     }
 }
 
-/// 本や背表紙の上でのクリックは、セリフ送りに使わない
+/// 巻物や背表紙の上でのクリックは、セリフ送りに使わない
 #[derive(Resource, Default)]
 pub struct PointerBlocked(pub bool);
+
+fn shelf_of(book: usize) -> Option<DotRect> {
+    BOOK_PROPS.get(book).map(|p| p.shelf)
+}
+
+fn table_of(book: usize) -> DotRect {
+    BOOK_PROPS.get(book).map_or(DESK_MAT, |p| p.table)
+}
 
 fn to_rect(r: DotRect) -> Rect {
     Rect::new(r.x, r.y, r.x + r.w, r.y + r.h)
 }
 
-fn book_rect(anchor: Vec2) -> Rect {
-    Rect::from_corners(anchor - BOOK_SIZE, anchor)
+fn book_rect(pos: Vec2) -> Rect {
+    Rect::from_corners(pos, pos + BOOK_SIZE)
 }
 
-fn close_rect(anchor: Vec2) -> Rect {
-    let min = Vec2::new(
-        anchor.x - CLOSE_INSET - CLOSE_SIZE,
-        anchor.y - BOOK_SIZE.y + CLOSE_INSET,
-    );
+fn close_rect(pos: Vec2) -> Rect {
+    let min = pos + Vec2::new(BOOK_SIZE.x - PAPER_INSET - 1.0 - CLOSE_SIZE, ROD_MAX + 1.0);
     Rect::from_corners(min, min + Vec2::splat(CLOSE_SIZE))
 }
 
-/// 上の軸 (ドラッグの持ち手)
-fn handle_rect(anchor: Vec2) -> Rect {
-    let book = book_rect(anchor);
-    Rect::new(
-        book.min.x,
-        book.min.y,
-        book.max.x,
-        book.min.y + BOOK_PAD.y + ROD_MAX,
-    )
-}
-
-/// ドロップ位置を机の範囲に収め、本が画面やチャット欄にはみ出さないようにする
-fn clamp_anchor(p: Vec2, table: DotRect) -> Vec2 {
+/// 巻物の中心を机の範囲に収め、画面やチャット欄にはみ出さないようにする。
+/// ドットの格子からずれると文字がにじむので整数に丸める
+fn clamp_pos(pos: Vec2, table: DotRect) -> Vec2 {
     let t = to_rect(table);
-    let p = p.clamp(t.min, t.max);
+    let pos = (pos + BOOK_SIZE / 2.0).clamp(t.min, t.max) - BOOK_SIZE / 2.0;
     Vec2::new(
-        p.x.clamp(BOOK_MIN_LEFT + BOOK_SIZE.x, DOT_W - 2.0),
-        p.y.clamp(2.0 + BOOK_SIZE.y, DOT_H - 2.0),
+        pos.x.clamp(BOOK_MIN_LEFT, DOT_W - 2.0 - BOOK_SIZE.x),
+        pos.y.clamp(2.0, DOT_H - 2.0 - BOOK_SIZE.y),
     )
-}
-
-/// 本を置く操作の既定値: 机の右下角
-fn default_anchor(table: DotRect) -> Vec2 {
-    clamp_anchor(to_rect(table).max, table)
+    .round()
 }
 
 // ─── 入力 ────────────────────────────────────────────────────
@@ -238,16 +211,14 @@ pub fn book_input(
     mut blocked: ResMut<PointerBlocked>,
     mut scrolls: Query<(&BookScroll, &mut ScrollPosition)>,
 ) {
-    if books.places.len() != BOOK_PROPS.len() {
-        books.places = vec![Place::Shelf; BOOK_PROPS.len()];
-    }
+    let shelf_books = BOOK_PROPS.len();
 
-    // シーンが切り替わったら、取り出していた本は棚に戻す
+    // 背景が切り替わったら、取り出していた巻物は棚に戻す
     let background = &story.scene().background;
     if books.background != *background {
         books.background.clone_from(background);
-        books.places.fill(Place::Shelf);
-        books.order.clear();
+        books.places[..shelf_books].fill(Place::Shelf);
+        books.order.retain(|&b| b >= shelf_books);
         books.drag = None;
     }
 
@@ -267,14 +238,15 @@ pub fn book_input(
         .filter(|&b| BOOK_PROPS[b].background == *background)
         .collect();
 
-    // Escape で読んでいる本を棚に戻す
+    // Escape で読んでいる巻物を棚に戻す
     if keys.just_pressed(KeyCode::Escape) {
         for &b in &in_scene {
             books.places[b] = Place::Shelf;
         }
+        books.drag = None;
     }
 
-    let Some(cursor) = cursor else {
+    let (Some(cursor), Some(cursor_px)) = (cursor, cursor_px) else {
         return;
     };
 
@@ -287,34 +259,24 @@ pub fn book_input(
     }
     blocked.0 = books.drag.is_some() || over_book.is_some() || over_shelf.is_some();
 
-    let reset_scroll = |scrolls: &mut Query<(&BookScroll, &mut ScrollPosition)>, book: usize| {
-        for (scroll, mut position) in scrolls.iter_mut() {
-            if scroll.0 == book {
-                position.0 = Vec2::ZERO;
-            }
-        }
-    };
-
     if mouse.just_pressed(MouseButton::Left) {
         if let Some(b) = over_book {
-            let Place::Table(anchor) = books.places[b] else {
-                unreachable!()
-            };
+            let pos = books.position(b).unwrap_or_default();
             books.bring_to_front(b);
-            if close_rect(anchor).contains(cursor) {
+            if shelf_of(b).is_some() && close_rect(pos).contains(cursor) {
                 books.places[b] = Place::Shelf;
-            } else if handle_rect(anchor).contains(cursor) {
+            } else {
                 books.drag = Some(Drag {
                     book: b,
-                    from_table: true,
-                    start: cursor_px.unwrap_or_default(),
+                    grab: Some(cursor - pos),
+                    start: cursor_px,
                 });
             }
         } else if let Some(b) = over_shelf {
             books.drag = Some(Drag {
                 book: b,
-                from_table: false,
-                start: cursor_px.unwrap_or_default(),
+                grab: None,
+                start: cursor_px,
             });
         }
     }
@@ -322,33 +284,42 @@ pub fn book_input(
     if mouse.just_released(MouseButton::Left)
         && let Some(drag) = books.drag.take()
     {
-        let prop = &BOOK_PROPS[drag.book];
-        let moved = cursor_px.unwrap_or_default().distance(drag.start);
-        if moved < CLICK_THRESHOLD {
-            // ほぼ動いていなければクリックとみなし、反対側へトグルする
-            if drag.from_table {
-                books.places[drag.book] = Place::Shelf;
-            } else {
-                books.places[drag.book] = Place::Table(default_anchor(prop.table));
-                books.bring_to_front(drag.book);
-                reset_scroll(&mut scrolls, drag.book);
+        let table = table_of(drag.book);
+        let on_shelf = shelf_of(drag.book).is_some_and(|s| to_rect(s).contains(cursor));
+        let clicked = cursor_px.distance(drag.start) < CLICK_THRESHOLD;
+        match drag.grab {
+            // 机の上の巻物はクリックでは動かさず、どこでドロップしても机の上に収める
+            Some(grab) if !clicked => {
+                books.places[drag.book] = if on_shelf {
+                    Place::Shelf
+                } else {
+                    Place::Table(clamp_pos(cursor - grab, table))
+                };
             }
-        } else if to_rect(prop.shelf).contains(cursor) {
-            // 本棚の上でドロップ ⇒ 出所に関わらず本棚へしまう
-            books.places[drag.book] = Place::Shelf;
-        } else if to_rect(prop.table).contains(cursor) {
-            // 机の上でドロップ ⇒ 出所に関わらずその位置に置く/動かす
-            books.places[drag.book] = Place::Table(clamp_anchor(cursor, prop.table));
-            books.bring_to_front(drag.book);
-            // 棚から出したときだけ最初のページに戻す（机の上での位置調整では読んでいた場所を保つ）
-            if !drag.from_table {
-                reset_scroll(&mut scrolls, drag.book);
+            Some(_) => {}
+            None => {
+                let center = if clicked {
+                    Some(to_rect(table).center())
+                } else {
+                    Some(cursor).filter(|&c| to_rect(table).contains(c))
+                };
+                if let Some(center) = center {
+                    books.places[drag.book] =
+                        Place::Table(clamp_pos(center - BOOK_SIZE / 2.0, table));
+                    books.bring_to_front(drag.book);
+                    // 棚から出したときだけ最初に戻す (机の上で動かしても読んでいた場所は保つ)
+                    for (scroll, mut position) in &mut scrolls {
+                        if scroll.0 == drag.book {
+                            position.0 = Vec2::ZERO;
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-/// マウスホイールで広げた本を読み進める
+/// マウスホイールで広げた巻物を読み進める
 pub fn scroll_books(
     mut wheel: MessageReader<MouseWheel>,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -360,7 +331,7 @@ pub fn scroll_books(
     let delta: f32 = wheel
         .read()
         .map(|e| match e.unit {
-            MouseScrollUnit::Line => e.y * 3.0 * 10.0 * scale,
+            MouseScrollUnit::Line => e.y * 3.0 * LINE_DOTS * scale,
             MouseScrollUnit::Pixel => e.y,
         })
         .sum();
@@ -434,9 +405,6 @@ pub fn draw_books(
     scrolls: Query<(&BookScroll, &ScrollPosition, &ComputedNode, &Children)>,
     lists: Query<&ComputedNode, With<BookList>>,
 ) {
-    if books.places.len() != BOOK_PROPS.len() {
-        return;
-    }
     let background = &story.scene().background;
     for (root, mut visibility) in &mut roots {
         *visibility = if root.0 == background {
@@ -446,41 +414,40 @@ pub fn draw_books(
         };
     }
 
-    let dragging = books.drag.as_ref();
+    let from_shelf = books.drag.as_ref().filter(|d| d.grab.is_none());
 
     for (spot, mut fill, mut edge) in &mut spots {
         let on_table = matches!(books.places[spot.0], Place::Table(_));
-        // 本が机に出ていて棚が空のときは、背表紙を隠す
+        // 巻物が机に出ていて棚が空のときは、背表紙を隠す
         fill.0 = if on_table { SHELF_EMPTY } else { Color::NONE };
         let highlight = !on_table && books.hover == Some(spot.0);
         *edge = BorderColor::all(if highlight { HIGHLIGHT } else { Color::NONE });
     }
 
-    // 本を置ける机の範囲。普段は見えず、本棚からドラッグ中だけ光る
+    // 巻物を置ける机の範囲。普段は見えず、本棚からドラッグ中だけ光る
     for (zone, mut fill, mut edge) in &mut zones {
-        let active = dragging.is_some_and(|d| d.book == zone.0 && !d.from_table);
+        let active = from_shelf.is_some_and(|d| d.book == zone.0);
         fill.0 = if active { DROPZONE_FILL } else { Color::NONE };
         *edge = BorderColor::all(if active { HIGHLIGHT } else { Color::NONE });
     }
 
     for (panel, mut node, mut visibility, mut z) in &mut panels {
-        let Place::Table(anchor) = books.places[panel.0] else {
+        let Some(pos) = books.position(panel.0) else {
             *visibility = Visibility::Hidden;
             continue;
         };
         *visibility = Visibility::Inherited;
-        let min = anchor - BOOK_SIZE;
-        node.left = percent(min.x / DOT_W * 100.0);
-        node.top = percent(min.y / DOT_H * 100.0);
+        node.left = percent(pos.x / DOT_W * 100.0);
+        node.top = percent(pos.y / DOT_H * 100.0);
         node.width = percent(BOOK_SIZE.x / DOT_W * 100.0);
         node.height = percent(BOOK_SIZE.y / DOT_H * 100.0);
         let depth = books.order.iter().position(|&b| b == panel.0).unwrap_or(0);
         z.0 = 20 + depth as i32;
     }
 
-    // ドラッグ中のプレビュー
+    // 本棚からドラッグ中のプレビュー
     let (ghost_node, ghost_visibility) = &mut *ghost;
-    match (dragging, books.cursor) {
+    match (from_shelf, books.cursor) {
         (Some(_), Some(c)) => {
             **ghost_visibility = Visibility::Inherited;
             ghost_node.left = percent((c.x - 6.5) / DOT_W * 100.0);
@@ -514,55 +481,20 @@ pub fn draw_books(
 
 // ─── 生成 ────────────────────────────────────────────────────
 
-fn text(font: &Handle<Font>, s: impl Into<String>, dots: f32, color: Color) -> impl Bundle {
+fn text(font: &Handle<Font>, s: impl Into<String>, color: Color) -> impl Bundle {
     (
         Text::new(s),
         TextFont::from(font.clone()),
-        DotFont(dots),
-        LineHeight::RelativeToFont(10.0 / 7.0),
+        DotFont(TEXT_DOTS),
+        LineHeight::RelativeToFont(LINE_DOTS / TEXT_DOTS),
         TextLayout::linebreak(LineBreak::NoWrap),
         TextColor(color),
     )
 }
 
-/// 右寄せの数値欄
-fn value_cell(list: &mut ChildSpawnerCommands, font: &Handle<Font>, value: &str, color: Color) {
-    list.spawn((
-        Node {
-            justify_content: JustifyContent::FlexEnd,
-            flex_shrink: 0.0,
-            ..default()
-        },
-        DotStyle {
-            min_width: Some(34.0),
-            ..default()
-        },
-    ))
-    .with_child(text(font, value, TEXT_DOTS, color));
-}
-
-fn ledger_row(
-    list: &mut ChildSpawnerCommands,
-    font: &Handle<Font>,
-    cells: (&str, &str, &str),
-    color: Color,
-) {
-    list.spawn((
-        Node::default(),
-        DotStyle {
-            margin_top: 2.0,
-            ..default()
-        },
-    ))
-    .with_children(|row| {
-        row.spawn(Node {
-            flex_grow: 1.0,
-            ..default()
-        })
-        .with_child(text(font, cells.0, TEXT_DOTS, color));
-        value_cell(row, font, cells.1, color);
-        value_cell(row, font, cells.2, color);
-    });
+/// 幅 `width` (ドット) に収まるように折り返す
+fn wrapped(s: &str, width: f32) -> String {
+    wrap(s, width / TEXT_DOTS)
 }
 
 fn rule(list: &mut ChildSpawnerCommands, margin_top: f32) {
@@ -576,124 +508,121 @@ fn rule(list: &mut ChildSpawnerCommands, margin_top: f32) {
             margin_top,
             ..default()
         },
-        BackgroundColor(LEATHER),
+        BackgroundColor(EDGE),
     ));
 }
 
-fn spawn_block(list: &mut ChildSpawnerCommands, font: &Handle<Font>, block: &Block) {
-    // 本文の 1 行に入る文字数 (全角 = 1em)
-    let text_em = (BOOK_SIZE.x - 2.0 * (BOOK_PAD.x + 1.0)) / TEXT_DOTS - 0.5;
+/// 表の 1 行。1 列目が値の列と並ばないほど長ければ、値の列を次の行に送る
+fn table_row(
+    list: &mut ChildSpawnerCommands,
+    font: &Handle<Font>,
+    cells: &[String],
+    head: bool,
+    width: f32,
+) {
+    let Some((label, values)) = cells.split_first() else {
+        return;
+    };
+    let color = if head { INK_MUTED } else { INK };
+    let values_w: f32 = values
+        .iter()
+        .map(|v| (text_em(v) * TEXT_DOTS).max(VALUE_DOTS))
+        .sum();
+    let inline = text_em(label) * TEXT_DOTS + values_w <= width;
 
-    match block {
-        Block::Heading(s) => {
-            list.spawn((Node::default(), DotStyle::default()))
-                .with_child(text(font, *s, HEADING_DOTS, INK));
-        }
-        Block::Text(s) => {
-            list.spawn((
-                Node::default(),
-                DotStyle {
-                    margin_top: 5.0,
-                    ..default()
-                },
-            ))
-            .with_child(text(font, wrap(s, text_em), TEXT_DOTS, INK));
-        }
-        Block::Ledger { head, rows, total } => {
-            list.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    ..default()
-                },
-                DotStyle {
-                    margin_top: 3.0,
-                    ..default()
-                },
-            ))
-            .with_children(|ledger| {
-                ledger_row(ledger, font, *head, INK_MUTED);
-                for &row in *rows {
-                    ledger_row(ledger, font, row, INK);
-                }
-                rule(ledger, 3.0);
-                ledger_row(ledger, font, (total.0, "", total.1), INK);
-            });
-        }
-        Block::Permit { title, lines } => {
-            list.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    align_self: AlignSelf::FlexEnd,
-                    width: percent(70),
-                    ..default()
-                },
-                DotStyle {
-                    padding: Vec2::new(6.0, 4.0),
-                    margin_top: 8.0,
-                    border: 1.0,
-                    radius: 4.0,
-                    ..default()
-                },
-                BackgroundColor(PAPER_LIGHT),
-                BorderColor::all(LEATHER),
-            ))
-            .with_children(|card| {
-                card.spawn(text(font, *title, TEXT_DOTS, INK));
-                for &(key, value) in *lines {
-                    card.spawn((
-                        Node {
-                            align_items: AlignItems::FlexEnd,
-                            ..default()
-                        },
-                        DotStyle {
-                            margin_top: 2.0,
-                            gap: 3.0,
-                            ..default()
-                        },
-                    ))
-                    .with_children(|line| {
-                        line.spawn((
-                            Node::default(),
-                            DotStyle {
-                                min_width: Some(14.0),
-                                ..default()
-                            },
-                        ))
-                        .with_child(text(font, key, SMALL_DOTS, INK_MUTED));
-                        line.spawn(Node {
-                            flex_direction: FlexDirection::Column,
-                            ..default()
-                        })
-                        .with_children(|cell| {
-                            cell.spawn(text(font, value_text(value), TEXT_DOTS, INK));
-                            rule(cell, 0.0);
-                        });
-                    });
-                }
-                // 印章
-                card.spawn(Node {
-                    justify_content: JustifyContent::FlexEnd,
-                    ..default()
-                })
-                .with_child((
-                    Node::default(),
-                    DotStyle {
-                        size: Some(Vec2::splat(14.0)),
-                        border: 1.0,
-                        radius: 7.0,
+    list.spawn((
+        Node {
+            flex_direction: if inline {
+                FlexDirection::Row
+            } else {
+                FlexDirection::Column
+            },
+            ..default()
+        },
+        DotStyle {
+            margin_top: 1.0,
+            ..default()
+        },
+    ))
+    .with_children(|row| {
+        row.spawn(Node {
+            flex_grow: 1.0,
+            ..default()
+        })
+        .with_child(text(font, wrapped(label, width), color));
+        row.spawn(Node {
+            justify_content: JustifyContent::FlexEnd,
+            ..default()
+        })
+        .with_children(|cols| {
+            for value in values {
+                cols.spawn((
+                    Node {
+                        justify_content: JustifyContent::FlexEnd,
+                        flex_shrink: 0.0,
                         ..default()
                     },
-                    BackgroundColor(SEAL),
-                    BorderColor::all(LEATHER),
-                ));
+                    DotStyle {
+                        min_width: Some(VALUE_DOTS),
+                        ..default()
+                    },
+                ))
+                .with_child(text(font, value.as_str(), color));
+            }
+        });
+    });
+}
+
+fn spawn_block(list: &mut ChildSpawnerCommands, font: &Handle<Font>, block: &Block, width: f32) {
+    let spaced = || {
+        (
+            Node {
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            DotStyle {
+                margin_top: 4.0,
+                ..default()
+            },
+        )
+    };
+    match block {
+        Block::Heading(s) => {
+            list.spawn(spaced()).with_children(|h| {
+                h.spawn(text(font, wrapped(s, width), INK));
+                rule(h, 1.0);
             });
+        }
+        Block::Text(s) => {
+            list.spawn(spaced())
+                .with_child(text(font, wrapped(s, width), INK));
+        }
+        Block::Rule => rule(list, 3.0),
+        Block::Row { cells, head } => table_row(list, font, cells, *head, width),
+        Block::Card(blocks) => {
+            let (node, mut style) = spaced();
+            style.padding = CARD_PAD;
+            style.border = 1.0;
+            style.radius = 2.0;
+            list.spawn((node, style, BackgroundColor(PAPER_LIGHT), BorderColor::all(EDGE)))
+                .with_children(|card| {
+                    for block in blocks {
+                        spawn_block(card, font, block, width - 2.0 * (CARD_PAD.x + 1.0));
+                    }
+                });
         }
     }
 }
 
-// 下線付きの値の前後に少し余白を空ける
-fn value_text(s: &str) -> String {
-    format!(" {s} ")
+fn load_blocks(file: &str) -> Vec<Block> {
+    let path = FileAssetReader::get_base_path()
+        .join("assets")
+        .join("books")
+        .join(format!("{file}.md"));
+    match std::fs::read_to_string(&path) {
+        Ok(md) => markdown::parse(&md),
+        Err(e) => vec![Block::Text(format!("{} を読めません ({e})", path.display()))],
+    }
 }
 
 pub fn spawn_books(mut commands: Commands, font: Res<UiFont>) {
@@ -719,7 +648,7 @@ pub fn spawn_books(mut commands: Commands, font: Res<UiFont>) {
                     if prop.background != background {
                         continue;
                     }
-                    // 本棚上の置き場所 (本を戻すドロップ先も兼ねる)
+                    // 本棚上の置き場所 (巻物を戻すドロップ先も兼ねる)
                     root.spawn((
                         ShelfSpot(i),
                         dot_node(prop.shelf),
@@ -743,7 +672,7 @@ pub fn spawn_books(mut commands: Commands, font: Res<UiFont>) {
                         BackgroundColor(Color::NONE),
                         BorderColor::all(Color::NONE),
                     ));
-                    spawn_book_panel(root, font, i, prop);
+                    spawn_book_panel(root, font, i, &load_blocks(prop.file));
                 }
 
                 root.spawn((
@@ -758,8 +687,8 @@ pub fn spawn_books(mut commands: Commands, font: Res<UiFont>) {
                         radius: 1.0,
                         ..default()
                     },
-                    BackgroundColor(PAPER_LIGHT),
-                    BorderColor::all(LEATHER),
+                    BackgroundColor(PAPER),
+                    BorderColor::all(EDGE),
                     GlobalZIndex(30),
                     Visibility::Hidden,
                 ));
@@ -767,12 +696,65 @@ pub fn spawn_books(mut commands: Commands, font: Res<UiFont>) {
     }
 }
 
-/// 机に広げた本 (上下の軸 + スクロールする本文 + ×)
+#[derive(Component)]
+pub struct DocumentRoot;
+
+/// 今のシーンの NPC の書類を、少しずつずらして机の上に並べる。シーンが変わるたびに作り直す
+pub fn sync_documents(
+    mut commands: Commands,
+    font: Res<UiFont>,
+    story: Res<Story>,
+    mut books: ResMut<Books>,
+    roots: Query<Entity, With<DocumentRoot>>,
+    mut shown: Local<Option<usize>>,
+) {
+    if *shown == Some(story.scene_idx) {
+        return;
+    }
+    *shown = Some(story.scene_idx);
+
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
+    let shelf_books = BOOK_PROPS.len();
+    books.places.resize(shelf_books, Place::Shelf);
+    books.order.retain(|&b| b < shelf_books);
+    books.drag = None;
+
+    let documents = &story.scene().documents;
+    let start = to_rect(DESK_MAT).center() - BOOK_SIZE / 2.0;
+    let spread = documents.len().saturating_sub(1) as f32 / 2.0;
+    for j in 0..documents.len() {
+        let offset = Vec2::new(18.0, 6.0) * (j as f32 - spread);
+        books
+            .places
+            .push(Place::Table(clamp_pos(start + offset, DESK_MAT)));
+        books.order.push(shelf_books + j);
+    }
+
+    commands
+        .spawn((
+            DocumentRoot,
+            StageNode,
+            Node {
+                position_type: PositionType::Absolute,
+                ..default()
+            },
+            GlobalZIndex(12),
+        ))
+        .with_children(|root| {
+            for (j, blocks) in documents.iter().enumerate() {
+                spawn_book_panel(root, &font.0, shelf_books + j, blocks);
+            }
+        });
+}
+
+/// 机に広げた巻物 (上下の軸 + スクロールする紙。本棚の巻物には × も付ける)
 fn spawn_book_panel(
     root: &mut ChildSpawnerCommands,
     font: &Handle<Font>,
     i: usize,
-    prop: &BookProp,
+    blocks: &[Block],
 ) {
     let rod = |top: bool| {
         (
@@ -789,7 +771,7 @@ fn spawn_book_panel(
                 ..default()
             },
             BackgroundColor(ROD),
-            BorderColor::all(LEATHER),
+            BorderColor::all(EDGE),
         )
     };
 
@@ -800,58 +782,68 @@ fn spawn_book_panel(
             flex_direction: FlexDirection::Column,
             ..default()
         },
-        DotStyle {
-            padding: BOOK_PAD,
-            border: 1.0,
-            radius: 3.0,
-            ..default()
-        },
-        BackgroundColor(PAPER),
-        BorderColor::all(LEATHER),
         GlobalZIndex(20),
         Visibility::Hidden,
     ))
     .with_children(|book| {
         book.spawn(rod(true));
+        // 紙 (DotStyle は margin を上書きするので、左右の余白は紙側、内側の余白はスクロール側に持たせる)
         book.spawn((
-            BookScroll(i),
             Node {
                 flex_grow: 1.0,
                 min_height: px(0),
-                overflow: Overflow::scroll_y(),
+                margin: UiRect::horizontal(percent(PAPER_INSET / BOOK_SIZE.x * 100.0)),
                 ..default()
             },
-            DotStyle {
-                padding: Vec2::new(0.0, 4.0),
-                ..default()
-            },
-            ScrollPosition::default(),
+            BackgroundColor(PAPER),
         ))
-        .with_children(|scroll| {
-            scroll
+        .with_children(|paper| {
+            paper
                 .spawn((
-                    BookList,
+                    BookScroll(i),
                     Node {
-                        flex_direction: FlexDirection::Column,
-                        width: percent(100),
-                        flex_shrink: 0.0,
+                        flex_grow: 1.0,
+                        min_height: px(0),
+                        overflow: Overflow::scroll_y(),
+                        // 既定の Stretch だとリストの高さが表示領域に固定され、スクロール量が 0 になる
+                        align_items: AlignItems::FlexStart,
                         ..default()
                     },
+                    DotStyle {
+                        padding: PAPER_PAD,
+                        ..default()
+                    },
+                    ScrollPosition::default(),
                 ))
-                .with_children(|list| {
-                    for block in prop.blocks {
-                        spawn_block(list, font, block);
-                    }
+                .with_children(|scroll| {
+                    scroll
+                        .spawn((
+                            BookList,
+                            Node {
+                                flex_direction: FlexDirection::Column,
+                                width: percent(100),
+                                flex_shrink: 0.0,
+                                ..default()
+                            },
+                        ))
+                        .with_children(|list| {
+                            for block in blocks {
+                                spawn_block(list, font, block, CONTENT_W);
+                            }
+                        });
                 });
         });
         book.spawn(rod(false));
 
         // × (本棚に戻す)
+        if shelf_of(i).is_none() {
+            return;
+        }
         book.spawn((
             Node {
                 position_type: PositionType::Absolute,
-                right: percent(CLOSE_INSET / BOOK_SIZE.x * 100.0),
-                top: percent(CLOSE_INSET / BOOK_SIZE.y * 100.0),
+                right: percent((PAPER_INSET + 1.0) / BOOK_SIZE.x * 100.0),
+                top: percent((ROD_MAX + 1.0) / BOOK_SIZE.y * 100.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
@@ -863,8 +855,8 @@ fn spawn_book_panel(
                 ..default()
             },
             BackgroundColor(PAPER_LIGHT),
-            BorderColor::all(LEATHER),
+            BorderColor::all(EDGE),
         ))
-        .with_child(text(font, "×", TEXT_DOTS, LEATHER));
+        .with_child(text(font, "×", EDGE));
     });
 }

@@ -162,6 +162,9 @@ pub fn spawn_panels(mut commands: Commands) {
                 },
                 Node {
                     overflow: Overflow::scroll_y(),
+                    // 既定の Stretch だとリストの高さが表示領域に固定され、
+                    // あふれたセリフが上にはみ出すだけでスクロール量が 0 になる
+                    align_items: AlignItems::FlexStart,
                     ..dot_node(layout.area)
                 },
                 DotStyle {
