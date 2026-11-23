@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use bevy::text::{LineBreak, LineHeight};
 use bevy::window::PrimaryWindow;
 
+use crate::counter::{BUTTON_BAR, Counter};
 use crate::dialogue::{CursorSpan, DialogueText, GhostSpan, dialogue_visible};
 use crate::scenario::{Dialogue, Story};
 use crate::transition::Transition;
@@ -199,14 +200,22 @@ pub(crate) fn stage_transform(window: &Window) -> (f32, Vec2) {
 }
 
 /// チャット画面をステージ (背景が表示されている 16:9 の領域) にぴったり重ねる
+#[allow(clippy::too_many_arguments)]
 pub fn layout_panels(
     window: Single<&Window, With<PrimaryWindow>>,
     story: Res<Story>,
     mut stages: Query<&mut Node, With<StageNode>>,
     mut roots: Query<(&PanelRoot, &mut Visibility)>,
     mut fonts: Query<(&DotFont, &mut TextFont)>,
-    mut styles: Query<(&DotStyle, &mut Node), Without<StageNode>>,
+    mut styles: Query<(&DotStyle, &mut Node, Option<&ChatLog>), Without<StageNode>>,
+    counter: Res<Counter>,
+    transition: Res<Transition>,
 ) {
+    let button_bar = if counter.judging && !transition.active() {
+        BUTTON_BAR.h
+    } else {
+        0.0
+    };
     let (scale, origin) = stage_transform(&window);
 
     for mut node in &mut stages {
@@ -231,7 +240,10 @@ pub fn layout_panels(
         }
     }
 
-    for (style, mut node) in &mut styles {
+    for (style, mut node, log) in &mut styles {
+        if let Some(log) = log {
+            node.height = percent((log.layout.area.h - button_bar) / DOT_H * 100.0);
+        }
         if let Some(size) = style.size {
             node.width = px(size.x * scale);
             node.height = px(size.y * scale);

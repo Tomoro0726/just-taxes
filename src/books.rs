@@ -15,6 +15,7 @@ use bevy::prelude::*;
 use bevy::text::{LineBreak, LineHeight};
 use bevy::window::PrimaryWindow;
 
+use crate::counter::Counter;
 use crate::markdown::{self, Block};
 use crate::panel::{DotFont, DotRect, DotStyle, StageNode, dot_node, rect, stage_transform};
 use crate::scenario::Story;
@@ -699,19 +700,21 @@ pub fn spawn_books(mut commands: Commands, font: Res<UiFont>) {
 #[derive(Component)]
 pub struct DocumentRoot;
 
-/// 今のシーンの NPC の書類を、少しずつずらして机の上に並べる。シーンが変わるたびに作り直す
+/// 窓口の来客の書類を、少しずつずらして机の上に並べる。来客や書類が変わるたびに作り直す
 pub fn sync_documents(
     mut commands: Commands,
     font: Res<UiFont>,
     story: Res<Story>,
+    counter: Res<Counter>,
     mut books: ResMut<Books>,
     roots: Query<Entity, With<DocumentRoot>>,
-    mut shown: Local<Option<usize>>,
+    mut shown: Local<Option<(usize, usize, usize)>>,
 ) {
-    if *shown == Some(story.scene_idx) {
+    let key = (story.scene_idx, counter.next, counter.desk.len());
+    if *shown == Some(key) {
         return;
     }
-    *shown = Some(story.scene_idx);
+    *shown = Some(key);
 
     for root in &roots {
         commands.entity(root).despawn();
@@ -721,7 +724,7 @@ pub fn sync_documents(
     books.order.retain(|&b| b < shelf_books);
     books.drag = None;
 
-    let documents = &story.scene().documents;
+    let documents = &counter.desk;
     let start = to_rect(DESK_MAT).center() - BOOK_SIZE / 2.0;
     let spread = documents.len().saturating_sub(1) as f32 / 2.0;
     for j in 0..documents.len() {
@@ -743,8 +746,8 @@ pub fn sync_documents(
             GlobalZIndex(12),
         ))
         .with_children(|root| {
-            for (j, blocks) in documents.iter().enumerate() {
-                spawn_book_panel(root, &font.0, shelf_books + j, blocks);
+            for (j, document) in documents.iter().enumerate() {
+                spawn_book_panel(root, &font.0, shelf_books + j, &document.blocks);
             }
         });
 }

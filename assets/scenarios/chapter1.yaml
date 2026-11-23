@@ -39,6 +39,20 @@ scenes:
   #     scene: town
   #     transition_out: fade
 
+  # ─── 窓口 (main) ───────────────────────────────────────
+  # 来客と必要な書類は assets/days/day1.yaml、NPC ごとの会話と持ち物は assets/npcs/*.md
+  - id: counter
+    background: main
+    transition_in: fade
+    day: day1
+
+    dialogues:
+      - text: "（窓口が開いた。今日も審査が始まる）"
+
+    next:
+      scene: town
+      transition_out: fade
+
   # ─── 3. 徴税所・メインシーン (main) ─────────────────────
   - id: town
     background: main
@@ -76,28 +90,3 @@ scenes:
       - 少女: "いつか必ず、思い出して……。"
       - narrator: "アルの頬を、一筋の涙が伝った。"
       - narrator: "彼が失った記憶のピースは、まだ見つからない。"
-
-  # ─── 5. 窓口 (NPC ごとの会話と持ち物は assets/npcs/*.md) ───
-  # 前のシーンからはつながっていないので、cargo run -- chapter1/counter_garudo で確かめる
-  - id: counter_garudo
-    background: main
-    transition_in: fade
-    npc: garudo
-
-    dialogues:
-      - npc: 入場
-      - npc: 強制退去 不一致
-
-    next:
-      scene: counter_mina
-      transition_out: fade
-
-  - id: counter_mina
-    background: main
-    transition_in: fade
-    npc: mina
-
-    dialogues:
-      - npc: 入場
-      - npc: 問答
-      - npc: 退場

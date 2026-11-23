@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use bevy::prelude::*;
 use serde::Deserialize;
 
-use crate::markdown::Block;
-use crate::npc::Npc;
+use crate::npc::Day;
 
 // ─── トランジション ──────────────────────────────────────────
 
@@ -46,8 +46,8 @@ pub struct Scene {
     pub transition_in: Option<TransitionType>,
     pub dialogues: Vec<Dialogue>,
     pub next: Option<Next>,
-    /// 窓口に来た NPC の持ち物の書類。シーンの間、机の上に広げておく
-    pub documents: Vec<Vec<Block>>,
+    /// 窓口のシーンなら、その日の来客。シーンの会話のあとに来客を順に迎える (counter.rs)
+    pub day: Option<Arc<Day>>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,8 +62,7 @@ pub struct Chapter {
 }
 
 // ─── YAMLからの生データ型 ────────────────────────────────────
-// yamlの `dialogues` は { "話者": "セリフ" } または { text: "セリフ" } のリスト。
-// { npc: "入場" } はシーンの NPC の「入場」の会話に置き換える
+// yamlの `dialogues` は { "話者": "セリフ" } または { text: "セリフ" } のリスト
 
 type YamlDialogue = BTreeMap<String, serde_yaml::Value>;
 
@@ -83,8 +82,8 @@ struct YamlScene {
     id: String,
     background: String,
     transition_in: Option<TransitionType>,
-    /// 窓口に来る NPC (`assets/npcs/<id>.md`)
-    npc: Option<String>,
+    /// 1日の来客 (`assets/days/<id>.yaml`)
+    day: Option<String>,
     #[serde(default)]
     dialogues: Vec<YamlDialogue>,
     next: Option<YamlNext>,
@@ -159,35 +158,17 @@ fn normalize_next(n: YamlNext) -> Next {
 }
 
 fn normalize_scene(s: YamlScene, assets: &Path, player: Option<&str>) -> Result<Scene, String> {
-    let npc = s
-        .npc
-        .as_deref()
-        .map(|id| Npc::load(assets, id, player))
-        .transpose()?;
-
-    let mut dialogues = Vec::new();
-    for d in &s.dialogues {
-        let Some(heading) = d.get("npc").filter(|_| d.len() == 1) else {
-            dialogues.push(normalize_dialogue(d));
-            continue;
-        };
-        let heading = value_to_string(heading);
-        let (Some(id), Some(npc)) = (&s.npc, &npc) else {
-            return Err(format!("シーン {} に npc の指定がありません", s.id));
-        };
-        let conversation = npc
-            .conversation(&heading)
-            .ok_or_else(|| format!("NPC {id} に「{heading}」の会話がありません"))?;
-        dialogues.extend_from_slice(conversation);
-    }
-
     Ok(Scene {
+        day: s
+            .day
+            .as_deref()
+            .map(|id| Day::load(assets, id, player))
+            .transpose()?,
         id: s.id,
         background: s.background,
         transition_in: s.transition_in,
-        dialogues,
+        dialogues: s.dialogues.iter().map(normalize_dialogue).collect(),
         next: s.next.map(normalize_next),
-        documents: npc.map(|n| n.documents).unwrap_or_default(),
     })
 }
 
@@ -256,6 +237,7 @@ pub fn load_story(arg: Option<&str>) -> Result<Story, String> {
         scene_idx,
         dialogue_idx,
         ended: false,
+        waiting: false,
     })
 }
 
@@ -267,11 +249,17 @@ pub struct Story {
     pub scene_idx: usize,
     pub dialogue_idx: usize,
     pub ended: bool,
+    /// 窓口のシーンで会話が尽き、次に何をするかを counter.rs が決めるのを待っている
+    pub waiting: bool,
 }
 
 impl Story {
     pub fn scene(&self) -> &Scene {
         &self.chapter.scenes[self.scene_idx]
+    }
+
+    pub fn scene_mut(&mut self) -> &mut Scene {
+        &mut self.chapter.scenes[self.scene_idx]
     }
 
     pub fn dialogue(&self) -> Option<&Dialogue> {
@@ -292,11 +280,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_npc_scene() {
-        let story = load_story(Some("chapter1/counter_garudo")).unwrap();
-        let scene = story.scene();
-        assert_eq!(scene.documents.len(), 2);
-        assert_eq!(scene.dialogues[0].speaker.as_deref(), Some("アル"));
-        assert_eq!(scene.dialogues[1].speaker.as_deref(), Some("ガルド"));
+    fn loads_counter_scene() {
+        let story = load_story(Some("chapter1/counter")).unwrap();
+        let day = story.scene().day.as_ref().unwrap();
+        assert!(!day.visitors.is_empty());
     }
 }

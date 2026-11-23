@@ -1,4 +1,5 @@
 mod books;
+mod counter;
 mod dialogue;
 mod dot_css;
 mod markdown;
@@ -48,6 +49,7 @@ fn main() {
     .init_resource::<dialogue::Typewriter>()
     .init_resource::<books::Books>()
     .init_resource::<books::PointerBlocked>()
+    .init_resource::<counter::Counter>()
     .add_systems(Startup, (setup, transition::spawn_overlay));
 
     match scenario::load_story(arg.as_deref()) {
@@ -67,14 +69,17 @@ fn main() {
                         dialogue::spawn_dialogue_box,
                         panel::spawn_panels,
                         books::spawn_books,
+                        counter::spawn_buttons,
                     )
                         .after(setup),
                 )
                 .add_systems(
                     Update,
                     (
+                        counter::run_counter,
                         books::sync_documents,
                         books::book_input,
+                        counter::counter_input,
                         dialogue::handle_input,
                         transition::tick_transition,
                         dialogue::tick_typewriter,
@@ -85,6 +90,7 @@ fn main() {
                             panel::scroll_chat_log,
                             books::scroll_books,
                             books::draw_books,
+                            counter::draw_buttons,
                             panel::layout_panels,
                             transition::draw_overlay,
                             draw_end_screen,

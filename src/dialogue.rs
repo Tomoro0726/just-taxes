@@ -28,7 +28,7 @@ pub struct Typewriter {
 }
 
 impl Typewriter {
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         *self = Self::default();
     }
 }
@@ -168,6 +168,11 @@ pub fn spawn_dialogue_box(mut commands: Commands, font: Res<UiFont>) {
 
 /// 次のセリフ・シーンへ進む
 fn advance(story: &mut Story, transition: &mut Transition, typewriter: &mut Typewriter) {
+    // 窓口では、会話が尽きても次の会話を足すまで最後のセリフを出したままにする
+    if story.scene().day.is_some() && story.dialogue_idx + 1 >= story.scene().dialogues.len() {
+        story.waiting = true;
+        return;
+    }
     typewriter.reset();
 
     let next_dialogue = story.dialogue_idx + 1;
@@ -176,8 +181,11 @@ fn advance(story: &mut Story, transition: &mut Transition, typewriter: &mut Type
         story.dialogue_idx = next_dialogue;
         return;
     }
+    finish_scene(story, transition);
+}
 
-    // セリフが尽きたので次のシーンへ遷移するか確認
+/// 次のシーンへ遷移する。次のシーンがなければ物語を終える
+pub fn finish_scene(story: &mut Story, transition: &mut Transition) {
     if let Some(next) = story.scene().next.clone()
         && let Some(next_idx) = story.find_scene(&next.scene)
     {
